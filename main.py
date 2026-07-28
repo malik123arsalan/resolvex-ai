@@ -1,7 +1,16 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+import os
+from dotenv import load_dotenv
+from supabase import create_client
 
 app = FastAPI()
+
+load_dotenv()
+
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
+supabase = create_client(supabase_url, supabase_key)
 
 class Incident(BaseModel):
     id: int
@@ -9,7 +18,7 @@ class Incident(BaseModel):
     problem_detail: str
     severity: str
 
-incidents = []
+
 
 @app.get("/")
 def home():
@@ -17,16 +26,24 @@ def home():
 
 @app.post("/incidents")
 def create_incident(incident: Incident):
-    incidents.append(incident)
-    return {"message": "Incident added successfully", "data": incident}
+    response = supabase.table("incident_log").insert({
+        "id": incident.id,
+        "problem_type": incident.problem_type,
+        "problem_detail": incident.problem_detail,
+        "severity": incident.severity
+    }).execute()
+    return {"message": "Incident added successfully", "data": response.data}
 
 @app.get("/incidents")
 def get_all_incidents():
-    return incidents
+    response = supabase.table("incident_log").select("*").execute()
+    return response.data
 
 @app.get("/incidents/{incident_id}")
 def get_incident_by_id(incident_id: int):
-    for incident in incidents:
-        if incident.id == incident_id:
-            return incident
-    return {"error": "Incident not found"}
+    response = supabase.table("incident_log").select("*").eq("id", incident_id).execute()
+    
+    if len(response.data) == 0:
+        return {"error": "Incident not found"}
+    
+    return response.data
