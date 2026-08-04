@@ -3,6 +3,8 @@ from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
 from supabase import create_client
+from agents.monitoring_agent import start_monitoring
+import asyncio
 
 app = FastAPI()
 
@@ -18,7 +20,9 @@ class Incident(BaseModel):
     problem_detail: str
     severity: str
 
-
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(start_monitoring())
 
 @app.get("/")
 def home():
