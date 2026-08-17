@@ -52,4 +52,4 @@ async def start_monitoring():
         else:
             print(f"Normal. Response time: {current_response_time}ms")
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(1)

@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 from agents.monitoring_agent import start_monitoring
 from agents.detective_agent import start_detective_agent
+from agents.planning_agent import start_planning_agent
 import asyncio
 
 app = FastAPI()
@@ -25,6 +26,7 @@ class Incident(BaseModel):
 async def startup_event():
     asyncio.create_task(start_monitoring())
     asyncio.create_task(start_detective_agent())
+    asyncio.create_task(start_planning_agent())
 
 @app.get("/")
 def home():
