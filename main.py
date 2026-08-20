@@ -6,6 +6,8 @@ from supabase import create_client
 from agents.monitoring_agent import start_monitoring
 from agents.detective_agent import start_detective_agent
 from agents.planning_agent import start_planning_agent
+from agents.human_approval_agent import start_human_approval_agent
+from agents.human_approval_agent import start_human_approval_agent, approve_incident, reject_incident
 import asyncio
 
 app = FastAPI()
@@ -27,6 +29,7 @@ async def startup_event():
     asyncio.create_task(start_monitoring())
     asyncio.create_task(start_detective_agent())
     asyncio.create_task(start_planning_agent())
+    asyncio.create_task(start_human_approval_agent())
 
 @app.get("/")
 def home():
@@ -55,3 +58,18 @@ def get_incident_by_id(incident_id: int):
         return {"error": "Incident not found"}
     
     return response.data
+
+@app.post("/incidents/{incident_id}/approve")
+def approve_incident_endpoint(incident_id: int):
+    incident = approve_incident(incident_id)
+
+    if incident is None:
+        return {"error": "Incident not found"}
+
+    return {"message": f"Incident {incident_id} approved and fix applied", "status": "approved_resolved"}
+
+
+@app.post("/incidents/{incident_id}/reject")
+def reject_incident_endpoint(incident_id: int):
+    reject_incident(incident_id)
+    return {"message": f"Incident {incident_id} rejected", "status": "rejected"}

@@ -69,7 +69,7 @@ No similar past incident was found. Based on your general knowledge, what is the
 """
 
     response = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=[
             {"role": "system", "content": "You are an expert DevOps engineer. Always respond in valid JSON format with keys: root_cause, confidence, explanation."},
             {"role": "user", "content": prompt}
@@ -103,14 +103,19 @@ async def start_detective_agent():
 
         if new_incidents:
             for incident in new_incidents:
-                print(f"Processing incident ID: {incident['id']}")
+                try:
+                    print(f"Processing incident ID: {incident['id']}")
 
-                similar = find_similar_incident(incident['problem_detail'])
-                result = analyze_incident(incident['problem_detail'], similar)
-                update_incident(incident['id'], result.root_cause)
-                add_to_chromadb(incident['id'], incident['problem_detail'], result.root_cause)
+                    similar = find_similar_incident(incident['problem_detail'])
+                    result = analyze_incident(incident['problem_detail'], similar)
+                    update_incident(incident['id'], result.root_cause)
+                    add_to_chromadb(incident['id'], incident['problem_detail'], result.root_cause)
 
-                print(f"Incident {incident['id']} analyzed. Root cause: {result.root_cause}")
+                    print(f"Incident {incident['id']} analyzed. Root cause: {result.root_cause}")
+                except Exception as e:
+                    print(f"ERROR processing incident {incident['id']}: {e}")
+                    # Ek incident fail hua to bhi loop agle incident/cycle pe chalta rahega
         else:
             print("No new incidents. Waiting...")
-            await asyncio.sleep(7)
+
+        await asyncio.sleep(7)

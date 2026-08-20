@@ -15,7 +15,7 @@ class RootCauseAnalysis(BaseModel):
     explanation: str
 
 response = client.chat.completions.create(
-    model="llama-3.3-70b-versatile",
+    model="openai/gpt-oss-120b",
     messages=[
         {"role": "system", "content": "You are an expert DevOps engineer. Always respond in valid JSON format with keys: root_cause, confidence, explanation."},
         {"role": "user", "content": "The server response time increased from 200ms to 3000ms in the last 10 minutes. What is the likely root cause?"}
