@@ -8,6 +8,7 @@ from agents.detective_agent import start_detective_agent
 from agents.planning_agent import start_planning_agent
 from agents.human_approval_agent import start_human_approval_agent
 from agents.human_approval_agent import start_human_approval_agent, approve_incident, reject_incident
+from agents.report_agent import start_report_agent
 import asyncio
 
 app = FastAPI()
@@ -30,6 +31,7 @@ async def startup_event():
     asyncio.create_task(start_detective_agent())
     asyncio.create_task(start_planning_agent())
     asyncio.create_task(start_human_approval_agent())
+    asyncio.create_task(start_report_agent())
 
 @app.get("/")
 def home():
