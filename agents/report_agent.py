@@ -1,11 +1,11 @@
 import os
-from dotenv import load_dotenv
-from supabase import create_client
-from groq import Groq
 import json
-import chromadb
+from dotenv import load_dotenv
+from groq import Groq
+from supabase import create_client
 from pydantic import BaseModel, Field
-import asyncio
+from agents.state import IncidentState
+from agents.detective_agent import collection  # reuse the same ChromaDB collection
 
 load_dotenv()
 
@@ -13,11 +13,7 @@ supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY")
 supabase = create_client(supabase_url, supabase_key)
 
-
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-chroma_client = chromadb.PersistentClient(path="./chroma_data")
-collection = chroma_client.get_or_create_collection(name="incidents")
 
 
 class IncidentReport(BaseModel):
@@ -28,31 +24,24 @@ class IncidentReport(BaseModel):
     additional_notes: str = Field(max_length=200, default="")
 
 
-# Part A — fetch incidents that are resolved but not yet reported
-def get_reportable_incidents():
-    response = supabase.table("incident_log").select("*").in_("status", ["auto_resolved", "approved_resolved"]).execute()
-    return response.data
-
-
-# Part B — generate a report for one incident using Groq
-def generate_report(incident):
+def generate_report(state: IncidentState):
     prompt = f"""
 Here is a resolved incident. Write a clear post-incident report.
 
-Problem Type: {incident['problem_type']}
-Problem Detail: {incident['problem_detail']}
-Severity: {incident['severity']}
-Root Cause: {incident['root_cause']}
-Fix Plan: {incident['fix_plan']}
-Risk Level: {incident['risk_level']}
-Final Status: {incident['status']}
+Problem Type: {state['problem_type']}
+Problem Detail: {state['problem_detail']}
+Severity: {state['severity']}
+Root Cause: {state['root_cause']}
+Fix Plan: {state['fix_plan']}
+Risk Level: {state['risk_level']}
+Final Status: {state['status']}
 
 Respond in valid JSON with these exact keys:
 - summary (2-3 sentences, max 300 characters, what happened)
 - root_cause_recap (1-2 sentences, max 200 characters, why it happened)
 - fix_applied (1-2 sentences, max 200 characters, what fix was applied)
 - outcome (1 sentence, max 150 characters, final result)
-- additional_notes (1-2 sentences, max 200 characters, any extra insight or pattern worth noting — leave empty string if nothing important)
+- additional_notes (1-2 sentences, max 200 characters, extra insight — empty string if none)
 
 Keep every field short and strictly within the character limits given.
 """
@@ -67,13 +56,9 @@ Keep every field short and strictly within the character limits given.
     )
 
     raw_data = json.loads(response.choices[0].message.content)
-    validated_report = IncidentReport(**raw_data)
-
-    return validated_report
+    return IncidentReport(**raw_data)
 
 
-
-# Part C(i) — save the report into the incident_reports table
 def save_report_to_supabase(incident_id, report):
     supabase.table("incident_reports").insert({
         "incident_id": incident_id,
@@ -85,8 +70,6 @@ def save_report_to_supabase(incident_id, report):
     }).execute()
 
 
-
-# Part C(ii) — add the report into ChromaDB for future RAG retrieval
 def save_report_to_chromadb(incident_id, report):
     combined_text = (
         f"Summary: {report.summary} "
@@ -95,41 +78,25 @@ def save_report_to_chromadb(incident_id, report):
         f"Outcome: {report.outcome} "
         f"Notes: {report.additional_notes}"
     )
-
-    collection.add(
-        documents=[combined_text],
-        ids=[f"report_{incident_id}"]
-    )
+    collection.add(documents=[combined_text], ids=[f"report_{incident_id}"])
 
 
-
-# Part D — mark incident as reported so it's not processed again
 def mark_as_reported(incident_id):
-    supabase.table("incident_log").update({
-        "status": "reported"
-    }).eq("id", incident_id).execute()
+    supabase.table("incident_log").update({"status": "reported"}).eq("id", incident_id).execute()
 
 
-# Part E — polling loop connecting Part(A + B + C + D)
-async def start_report_agent():
-    while True:
-        reportable_incidents = get_reportable_incidents()
+# LangGraph node
+def report_node(state: IncidentState) -> dict:
+    try:
+        print(f"Generating report for incident ID: {state['id']}")
 
-        if reportable_incidents:
-            for incident in reportable_incidents:
-                try:
-                    print(f"Generating report for incident ID: {incident['id']}")
+        report = generate_report(state)
+        save_report_to_supabase(state['id'], report)
+        save_report_to_chromadb(state['id'], report)
+        mark_as_reported(state['id'])
 
-                    report = generate_report(incident)
-                    save_report_to_supabase(incident['id'], report)
-                    save_report_to_chromadb(incident['id'], report)
-                    mark_as_reported(incident['id'])
-
-                    print(f"Report completed for incident {incident['id']}")
-
-                except Exception as e:
-                    print(f"ERROR generating report for incident {incident['id']}: {e}")
-        else:
-            print("No reportable incidents. Waiting...")
-
-        await asyncio.sleep(10)
+        print(f"Report completed for incident {state['id']}")
+        return {"status": "reported"}
+    except Exception as e:
+        print(f"ERROR generating report for incident {state['id']}: {e}")
+        return {"status": "report_failed"}

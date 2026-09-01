@@ -3,12 +3,7 @@ from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
 from supabase import create_client
-from agents.monitoring_agent import start_monitoring
-from agents.detective_agent import start_detective_agent
-from agents.planning_agent import start_planning_agent
-from agents.human_approval_agent import start_human_approval_agent
-from agents.human_approval_agent import start_human_approval_agent, approve_incident, reject_incident
-from agents.report_agent import start_report_agent
+from graph import start_pipeline
 import asyncio
 
 app = FastAPI()
@@ -27,11 +22,7 @@ class Incident(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(start_monitoring())
-    asyncio.create_task(start_detective_agent())
-    asyncio.create_task(start_planning_agent())
-    asyncio.create_task(start_human_approval_agent())
-    asyncio.create_task(start_report_agent())
+    asyncio.create_task(start_pipeline())
 
 @app.get("/")
 def home():

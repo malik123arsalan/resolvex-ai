@@ -1,9 +1,10 @@
 import random
 import asyncio
 import os
+from typing import TypedDict
 from dotenv import load_dotenv
 from supabase import create_client
-from agents.state import IncidentState
+from langgraph.graph import StateGraph, START, END
 
 load_dotenv()
 
@@ -11,6 +12,8 @@ supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY")
 supabase = create_client(supabase_url, supabase_key)
 
+
+# ── Incident generator functions (unchanged from agents/monitoring_agent.py) ──
 
 def generate_response_time_incident():
     value = random.randint(1000, 4000)
@@ -76,7 +79,18 @@ def generate_incident():
     return generator()
 
 
-# LangGraph node — replaces the old start_monitoring() loop body
+# ── LangGraph State definition ──
+
+class IncidentState(TypedDict):
+    id: int
+    problem_type: str
+    problem_detail: str
+    severity: str
+    status: str
+
+
+# ── LangGraph Node: wraps the monitoring logic ──
+
 def monitoring_node(state: IncidentState) -> dict:
     incident = generate_incident()
     incident_id = random.randint(10000, 99999)
@@ -101,3 +115,33 @@ def monitoring_node(state: IncidentState) -> dict:
         "severity": incident["severity"],
         "status": "detected"
     }
+
+
+# ── Build the graph (currently just one node, for testing) ──
+
+graph_builder = StateGraph(IncidentState)
+graph_builder.add_node("monitoring", monitoring_node)
+graph_builder.add_edge(START, "monitoring")
+graph_builder.add_edge("monitoring", END)
+graph = graph_builder.compile()
+
+
+# ── Outer trigger loop: decides WHEN to start a new graph run ──
+
+async def start_monitoring_loop():
+    while True:
+        is_anomaly = random.random() < 0.3
+
+        if is_anomaly:
+            result = graph.invoke({})
+            print("Graph run finished. Final state:", result)
+        else:
+            print("Normal. No anomaly detected.")
+
+        await asyncio.sleep(5)
+
+
+# ── Entry point to actually run this test file ──
+
+if __name__ == "__main__":
+    asyncio.run(start_monitoring_loop())

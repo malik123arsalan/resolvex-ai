@@ -2,7 +2,8 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client
 import requests
-import asyncio
+from langgraph.types import interrupt
+from agents.state import IncidentState
 
 load_dotenv()
 
@@ -13,92 +14,68 @@ supabase = create_client(supabase_url, supabase_key)
 slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL")
 
 
-def get_planned_incidents():
-    response = supabase.table("incident_log").select("*").eq("status", "planned").execute()
-    return response.data
-
-
-def decide_action(risk_level):
-    if risk_level == "low":
-        return "auto_apply"
-    else:  # for both medium and high
-        return "needs_approval"
-
-
 def auto_apply_fix(incident_id, fix_plan):
     print(f"AUTO-APPLYING fix for incident {incident_id}: {fix_plan}")
-    print("Fix applied successfully (simulated).")
-
-    supabase.table("incident_log").update({
-        "status": "auto_resolved"
-    }).eq("id", incident_id).execute()
+    supabase.table("incident_log").update({"status": "auto_resolved"}).eq("id", incident_id).execute()
 
 
 def send_slack_alert(incident_id, fix_plan, risk_level):
     message = {
         "text": f"⚠️ *Approval Needed* — Incident #{incident_id}\n"
                 f"*Risk Level:* {risk_level}\n"
-                f"*Suggested Fix:* {fix_plan}\n"
-                f"Reply here to approve/reject (manual for now)."
+                f"*Suggested Fix:* {fix_plan}"
     }
-
     response = requests.post(slack_webhook_url, json=message)
-
     if response.status_code == 200:
         print(f"Slack alert sent for incident {incident_id}")
     else:
         print(f"Failed to send Slack alert: {response.status_code} - {response.text}")
 
-    supabase.table("incident_log").update({
-        "status": "pending_approval"
-    }).eq("id", incident_id).execute()
+    supabase.table("incident_log").update({"status": "pending_approval"}).eq("id", incident_id).execute()
 
 
 def approve_incident(incident_id):
-    response = supabase.table("incident_log").select("*").eq("id", incident_id).execute()
-
-    if not response.data:
-        return None
-
-    incident = response.data[0]
-
-    print(f"APPROVED: Applying fix for incident {incident_id}: {incident['fix_plan']}")
-    print("Fix applied successfully (human-approved).")
-
-    supabase.table("incident_log").update({
-        "status": "approved_resolved"
-    }).eq("id", incident_id).execute()
-
-    return incident
+    supabase.table("incident_log").update({"status": "approved_resolved"}).eq("id", incident_id).execute()
+    print(f"APPROVED: Incident {incident_id} resolved.")
 
 
 def reject_incident(incident_id):
-    supabase.table("incident_log").update({
-        "status": "rejected"
-    }).eq("id", incident_id).execute()
-
+    supabase.table("incident_log").update({"status": "rejected"}).eq("id", incident_id).execute()
     print(f"REJECTED: Incident {incident_id} fix was not applied.")
 
 
-async def start_human_approval_agent():
-    while True:
-        planned_incidents = get_planned_incidents()
+# LangGraph node — auto-apply path (low risk)
+def auto_apply_node(state: IncidentState) -> dict:
+    try:
+        auto_apply_fix(state['id'], state['fix_plan'])
+        return {"status": "auto_resolved"}
+    except Exception as e:
+        print(f"ERROR auto-applying fix for incident {state['id']}: {e}")
+        return {"status": "auto_apply_failed"}
 
-        if planned_incidents:
-            for incident in planned_incidents:
-                try:
-                    print(f"Reviewing incident ID: {incident['id']}")
 
-                    action = decide_action(incident['risk_level'])
+# LangGraph node — human approval path (medium/high risk)
+def human_approval_node(state: IncidentState) -> dict:
+    try:
+        send_slack_alert(state['id'], state['fix_plan'], state['risk_level'])
+    except Exception as e:
+        print(f"ERROR sending Slack alert for incident {state['id']}: {e}")
+        return {"status": "slack_failed"}
 
-                    if action == "auto_apply":
-                        auto_apply_fix(incident['id'], incident['fix_plan'])
-                    else:
-                        send_slack_alert(incident['id'], incident['fix_plan'], incident['risk_level'])
+    # Graph pauses here until resumed with Command(resume="approve"/"reject")
+    decision = interrupt({
+        "incident_id": state['id'],
+        "fix_plan": state['fix_plan'],
+        "risk_level": state['risk_level']
+    })
 
-                except Exception as e:
-                    print(f"ERROR reviewing incident {incident['id']}: {e}")
+    try:
+        if decision == "approve":
+            approve_incident(state['id'])
+            return {"status": "approved_resolved"}
         else:
-            print("No planned incidents. Waiting...")
-
-        await asyncio.sleep(7)
+            reject_incident(state['id'])
+            return {"status": "rejected"}
+    except Exception as e:
+        print(f"ERROR finalizing decision for incident {state['id']}: {e}")
+        return {"status": "approval_failed"}
