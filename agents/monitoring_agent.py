@@ -81,16 +81,14 @@ def monitoring_node(state: IncidentState) -> dict:
     incident = generate_incident()
     incident_id = random.randint(10000, 99999)
 
-    print(f"ALERT: {incident['problem_type']} detected! Severity: {incident['severity']}")
-
     try:
         supabase.table("incident_log").insert({
             "id": incident_id,
             "problem_type": incident["problem_type"],
             "problem_detail": incident["problem_detail"],
-            "severity": incident["severity"]
+            "severity": incident["severity"],
+            "thread_id": state.get("thread_id")   
         }).execute()
-        print("Incident logged in database!")
     except Exception as e:
         print(f"ERROR logging incident: {e}")
 

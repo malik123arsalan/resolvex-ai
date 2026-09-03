@@ -1,14 +1,24 @@
 import asyncio
 import random
 import uuid
+import sqlite3
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from agents.state import IncidentState
 from agents.monitoring_agent import monitoring_node
 from agents.detective_agent import detective_node
 from agents.planning_agent import planning_node
 from agents.human_approval_agent import auto_apply_node, human_approval_node
 from agents.report_agent import report_node
+from supabase import create_client
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
+supabase = create_client(supabase_url, supabase_key)
 
 graph_builder = StateGraph(IncidentState)
 
@@ -21,7 +31,18 @@ graph_builder.add_node("report", report_node)
 
 graph_builder.add_edge(START, "monitoring")
 graph_builder.add_edge("monitoring", "detective")
-graph_builder.add_edge("detective", "planning")
+
+def route_after_detective(state: IncidentState) -> str:
+    if state.get("status") == "detective_failed":
+        return "end"
+    else:
+        return "planning"
+
+
+graph_builder.add_conditional_edges(
+    "detective", route_after_detective,
+    {"planning": "planning", "end": END}
+)
 
 
 def route_by_risk(state: IncidentState) -> str:
@@ -53,7 +74,10 @@ graph_builder.add_conditional_edges(
 
 graph_builder.add_edge("report", END)
 
-checkpointer = InMemorySaver()
+# ──  SQLite checkpointer (restart-safe) ──
+sqlite_conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
+checkpointer = SqliteSaver(sqlite_conn)
+
 graph = graph_builder.compile(checkpointer=checkpointer)
 
 
@@ -65,7 +89,8 @@ async def start_pipeline():
             thread_id = str(uuid.uuid4())
             config = {"configurable": {"thread_id": thread_id}}
             try:
-                result = graph.invoke({}, config=config)
+                # thread_id passes into initial state
+                result = graph.invoke({"thread_id": thread_id}, config=config)
                 print(f"Graph run (thread {thread_id}) finished/paused. State:", result)
             except Exception as e:
                 print(f"ERROR running graph: {e}")
