@@ -7,3 +7,6 @@ langgraph
 langgraph-checkpoint-sqlite
 chromadb
 pydantic
+streamlit
+pandas
+requests
