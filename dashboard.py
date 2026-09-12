@@ -125,7 +125,7 @@ with col_refresh:
 incidents = fetch_incidents()
 
 if not incidents:
-    st.info("Abhi koi incident nahi hai.")
+    st.info("There are currently no incidents.")
     st.stop()
 
 df = pd.DataFrame(incidents)
@@ -195,7 +195,7 @@ st.subheader("📄 Incident Reports")
 reports = fetch_reports()
 
 if not reports:
-    st.info("Abhi koi report generate nahi hua.")
+    st.info("No report has been generated yet.")
 else:
     reports_df = pd.DataFrame(reports)
     reports_df["report_label"] = "Incident " + reports_df["incident_id"].astype(str)
@@ -237,7 +237,7 @@ st.subheader("✅ Pending Approvals")
 pending_df = df[df["status"] == "pending_approval"]
 
 if pending_df.empty:
-    st.info("Abhi koi incident approval ke liye pending nahi hai.")
+    st.info("There are no incidents pending approval at the moment.")
 else:
     for _, row in pending_df.iterrows():
         with st.container(border=True):
@@ -268,9 +268,9 @@ else:
                                 st.error(f"Approve failed: {error_msg}")
 
                         except requests.exceptions.ConnectionError:
-                            st.error("FastAPI server chal nahi raha. Terminal me `uvicorn main:app` chalao.")
+                            st.error("The FastAPI server is not running. Run 'uvicorn main:app' in the terminal.")
                         except requests.exceptions.Timeout:
-                            st.error("Server response me bahut time laga (timeout).")
+                            st.error("The server took too long to respond (timeout).")
 
             with col_reject:
                 if st.button("❌ Reject", key=f"reject_{row['id']}"):
@@ -291,6 +291,6 @@ else:
                                 st.error(f"Reject failed: {error_msg}")
 
                         except requests.exceptions.ConnectionError:
-                            st.error("FastAPI server chal nahi raha. Terminal me `uvicorn main:app` chalao.")
+                            st.error("The FastAPI server is not running. Run 'uvicorn main:app' in the terminal.")
                         except requests.exceptions.Timeout:
-                            st.error("Server response me bahut time laga (timeout).")
+                            st.error("The server took too long to respond (timeout).")

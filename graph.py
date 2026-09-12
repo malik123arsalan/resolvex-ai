@@ -97,4 +97,4 @@ async def start_pipeline():
         else:
             print("Normal. No anomaly detected.")
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(30)

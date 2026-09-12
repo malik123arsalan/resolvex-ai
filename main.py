@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 import os
 from dotenv import load_dotenv
 from supabase import create_client
@@ -8,6 +9,13 @@ from langgraph.types import Command
 import asyncio
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 load_dotenv()
 
