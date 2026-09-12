@@ -68,8 +68,7 @@ COLUMN_LABELS = {
     "thread_id": "Thread ID",
 }
 
-FASTAPI_BASE_URL = "http://localhost:8000"
-
+FASTAPI_BASE_URL = "https://resolvex-ai-backend.onrender.com"
 
 @st.cache_data(ttl=10)
 def fetch_incidents():
