@@ -7,4 +7,3 @@ langgraph
 langgraph-checkpoint-sqlite
 chromadb
 pydantic
-EOF
