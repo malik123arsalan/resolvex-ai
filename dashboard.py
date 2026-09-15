@@ -49,12 +49,6 @@ SEVERITY_COLORS = {
     "high": "#EF4444",
 }
 
-RISK_COLORS = {
-    "low": "#3B82F6",
-    "medium": "#F59E0B",
-    "high": "#EF4444",
-}
-
 COLUMN_LABELS = {
     "id": "ID",
     "created_at": "Created At",
@@ -69,6 +63,20 @@ COLUMN_LABELS = {
 }
 
 FASTAPI_BASE_URL = "https://resolvex-ai-backend.onrender.com"
+
+
+def safe_text(value, fallback="N/A"):
+    """Handles missing Supabase values safely.
+    Pandas turns SQL NULL into NaN, and NaN is truthy in Python —
+    so a plain `value or fallback` does NOT catch it. This does."""
+    if value is None:
+        return fallback
+    if isinstance(value, float) and pd.isna(value):
+        return fallback
+    if isinstance(value, str) and not value.strip():
+        return fallback
+    return value
+
 
 @st.cache_data(ttl=10)
 def fetch_incidents():
@@ -124,7 +132,7 @@ with col_refresh:
 incidents = fetch_incidents()
 
 if not incidents:
-    st.info("There are currently no incidents.")
+    st.info("Abhi koi incident nahi hai.")
     st.stop()
 
 df = pd.DataFrame(incidents)
@@ -172,19 +180,20 @@ with badge_col1:
     status_color = "green" if incident['status'] == 'reported' else "orange" if incident['status'] == 'pending_approval' else "red" if incident['status'] == 'rejected' else "blue"
     st.markdown(f"**Status:** :{status_color}[{incident['status'].upper()}]")
 with badge_col2:
-    st.markdown(f"**Severity:** {incident.get('severity', 'N/A').upper()}")
+    severity = safe_text(incident.get('severity'), "N/A")
+    st.markdown(f"**Severity:** {severity.upper() if severity != 'N/A' else severity}")
 with badge_col3:
-    risk = incident.get('risk_level') or "Not yet planned"
-    st.markdown(f"**Risk Level:** {risk if risk == 'Not yet planned' else risk.upper()}")
+    risk = safe_text(incident.get('risk_level'), "Not yet planned")
+    st.markdown(f"**Risk Level:** {risk.upper() if risk != 'Not yet planned' else risk}")
 
-st.markdown(f"**Problem:** {incident.get('problem_detail', 'N/A')}")
-st.markdown(f"**Reported at:** {incident.get('created_at', 'N/A')}")
+st.markdown(f"**Problem:** {safe_text(incident.get('problem_detail'))}")
+st.markdown(f"**Reported at:** {safe_text(incident.get('created_at'))}")
 
 st.markdown("#### 🕵️ Root Cause")
-st.info(incident.get("root_cause") or "Not yet analyzed.")
+st.info(safe_text(incident.get("root_cause"), "Not yet analyzed."))
 
 st.markdown("#### 🛠️ Fix Plan")
-st.success(incident.get("fix_plan") or "Not yet planned.")
+st.success(safe_text(incident.get("fix_plan"), "Not yet planned."))
 
 st.markdown("---")
 
@@ -194,7 +203,7 @@ st.subheader("📄 Incident Reports")
 reports = fetch_reports()
 
 if not reports:
-    st.info("No report has been generated yet.")
+    st.info("Abhi koi report generate nahi hua.")
 else:
     reports_df = pd.DataFrame(reports)
     reports_df["report_label"] = "Incident " + reports_df["incident_id"].astype(str)
@@ -209,22 +218,22 @@ else:
     report_row = reports_df[reports_df["incident_id"].astype(str) == selected_incident_id].iloc[0]
 
     st.markdown(f"#### Report — Incident {selected_incident_id}")
-    st.caption(f"Generated at: {report_row['created_at']}")
+    st.caption(f"Generated at: {safe_text(report_row.get('created_at'))}")
 
     st.markdown("**📝 Summary**")
-    st.write(report_row["summary"] or "N/A")
+    st.write(safe_text(report_row.get("summary")))
 
     st.markdown("**🕵️ Root Cause Recap**")
-    st.info(report_row["root_cause_recap"] or "N/A")
+    st.info(safe_text(report_row.get("root_cause_recap")))
 
     st.markdown("**🛠️ Fix Applied**")
-    st.success(report_row["fix_applied"] or "N/A")
+    st.success(safe_text(report_row.get("fix_applied")))
 
     st.markdown("**✅ Outcome**")
-    st.write(report_row["outcome"] or "N/A")
+    st.write(safe_text(report_row.get("outcome")))
 
-    notes = report_row["additional_notes"]
-    if notes and notes.strip():
+    notes = safe_text(report_row.get("additional_notes"), None)
+    if notes:
         st.markdown("**📌 Additional Notes**")
         st.write(notes)
 
@@ -235,61 +244,69 @@ st.subheader("✅ Pending Approvals")
 
 pending_df = df[df["status"] == "pending_approval"]
 
-if pending_df.empty:
-    st.info("There are no incidents pending approval at the moment.")
-else:
-    for _, row in pending_df.iterrows():
+actionable_df = pending_df[pending_df["thread_id"].notna()]
+legacy_df = pending_df[pending_df["thread_id"].isna()]
+
+if actionable_df.empty and legacy_df.empty:
+    st.info("Abhi koi incident approval ke liye pending nahi hai.")
+
+if not actionable_df.empty:
+    for _, row in actionable_df.iterrows():
         with st.container(border=True):
             col_info, col_approve, col_reject = st.columns([4, 1, 1])
 
             with col_info:
                 st.markdown(f"**Incident {row['id']}** — {row['problem_type']}")
-                st.caption(row['problem_detail'] if row['problem_detail'] else "")
-                if row.get('fix_plan'):
-                    st.caption(f"Proposed fix: {row['fix_plan']}")
+                st.caption(safe_text(row.get('problem_detail'), ""))
+                fix_plan = safe_text(row.get('fix_plan'), None)
+                if fix_plan:
+                    st.caption(f"Proposed fix: {fix_plan}")
 
             with col_approve:
                 if st.button("✅ Approve", key=f"approve_{row['id']}"):
-                    with st.spinner("Approving..."):
+                    with st.spinner("Approving... (may take up to a minute)"):
                         try:
                             response = requests.post(
                                 f"{FASTAPI_BASE_URL}/incidents/{row['id']}/approve",
-                                timeout=45
+                                timeout=90
                             )
                             data = response.json()
-
                             if response.status_code == 200 and "error" not in data:
                                 st.success(f"Incident {row['id']} approved!")
                                 fetch_incidents.clear()
                                 st.rerun()
                             else:
-                                error_msg = data.get("error", f"HTTP {response.status_code}")
-                                st.error(f"Approve failed: {error_msg}")
-
+                                st.error(f"Approve failed: {data.get('error', f'HTTP {response.status_code}')}")
                         except requests.exceptions.ConnectionError:
-                            st.error("The FastAPI server is not running. Run 'uvicorn main:app' in the terminal.")
+                            st.error("FastAPI server chal nahi raha. Terminal me `uvicorn main:app` chalao.")
                         except requests.exceptions.Timeout:
-                            st.error("The server took too long to respond (timeout).")
+                            st.error("Server response me bahut time laga (timeout). Render Logs check karo.")
 
             with col_reject:
                 if st.button("❌ Reject", key=f"reject_{row['id']}"):
-                    with st.spinner("Rejecting..."):
+                    with st.spinner("Rejecting... (may take up to a minute)"):
                         try:
                             response = requests.post(
                                 f"{FASTAPI_BASE_URL}/incidents/{row['id']}/reject",
-                                timeout=45
+                                timeout=90
                             )
                             data = response.json()
-
                             if response.status_code == 200 and "error" not in data:
                                 st.warning(f"Incident {row['id']} rejected.")
                                 fetch_incidents.clear()
                                 st.rerun()
                             else:
-                                error_msg = data.get("error", f"HTTP {response.status_code}")
-                                st.error(f"Reject failed: {error_msg}")
-
+                                st.error(f"Reject failed: {data.get('error', f'HTTP {response.status_code}')}")
                         except requests.exceptions.ConnectionError:
-                            st.error("The FastAPI server is not running. Run 'uvicorn main:app' in the terminal.")
+                            st.error("FastAPI server chal nahi raha. Terminal me `uvicorn main:app` chalao.")
                         except requests.exceptions.Timeout:
-                            st.error("The server took too long to respond (timeout).")
+                            st.error("Server response me bahut time laga (timeout). Render Logs check karo.")
+
+if not legacy_df.empty:
+    with st.expander(f"⚠️ {len(legacy_df)} legacy incidents (pre-LangGraph data, cannot be resumed)"):
+        st.caption("Yeh purane incidents hai jinme thread_id save nahi hua tha — LangGraph aane se pehle ka data. Inhe approve/reject nahi kiya ja sakta.")
+        st.dataframe(
+            legacy_df[["id", "problem_type", "problem_detail", "severity"]],
+            use_container_width=True,
+            hide_index=True
+        )
