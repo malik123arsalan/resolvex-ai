@@ -8,26 +8,40 @@ from supabase import create_client
 from pydantic import BaseModel, field_validator
 from agents.state import IncidentState
 
+# Load secrets (Supabase, Groq) from the .env file
 load_dotenv()
 
+# Database client used to read and update incidents
 supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY")
 supabase = create_client(supabase_url, supabase_key)
 
+# LLM client used for the investigation
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
+# Persistent vector store, so past incidents survive restarts.
+# The same "incidents" collection is shared with the other agents.
 chroma_client = chromadb.PersistentClient(path="./chroma_data")
 collection = chroma_client.get_or_create_collection(name="incidents")
 
 
+# ---------------------------------------------------------------
+# Tools
+# The LLM decides which of these to call. We only run them.
+# Tools must return plain text, because the LLM reads the result.
+# ---------------------------------------------------------------
+
 # ── Tool 1: search ChromaDB for similar past incidents ──
 def search_past_incidents(query: str) -> str:
+    # Nothing to search yet (for example, on the very first run)
     if collection.count() == 0:
         return "No past incidents found in the database."
 
+    # Find the single closest past incident (a smaller distance means more similar)
     results = collection.query(query_texts=[query], n_results=1)
     distance = results['distances'][0][0]
 
+    # Only trust the match if it is close enough, so we avoid misleading the LLM
     if distance <= 1.0:
         return f"Found similar past incident: {results['documents'][0][0]}"
     else:
@@ -36,6 +50,7 @@ def search_past_incidents(query: str) -> str:
 
 # ── Tool 2: simulated check for recent deployments ──
 def check_recent_deployments(service_name: str = "general") -> str:
+    # Simulated data: roughly 40% of the time a recent deployment exists
     had_deployment = random.random() < 0.4
     if had_deployment:
         minutes_ago = random.randint(5, 180)
@@ -46,6 +61,7 @@ def check_recent_deployments(service_name: str = "general") -> str:
 
 # ── Tool 3: simulated check for server logs ──
 def check_server_logs(problem_type: str = "general") -> str:
+    # Simulated logs: one typical log message per problem type
     log_snippets = {
         "high_response_time": "Logs show repeated timeout warnings from the database connection pool.",
         "high_cpu_usage": "Logs show a background job consuming excessive CPU cycles.",
@@ -53,15 +69,21 @@ def check_server_logs(problem_type: str = "general") -> str:
         "disk_space_low": "Logs show large temp files not being cleaned up.",
         "database_connection_failure": "Logs show connection refused errors from the database host."
     }
+    # Fall back to a generic message for unknown problem types
     return log_snippets.get(problem_type, "No specific error patterns found in logs.")
 
 
 
+# ---------------------------------------------------------------
+# Output validation
+# ---------------------------------------------------------------
 class RootCauseAnalysis(BaseModel):
     root_cause: str
     confidence: float
     explanation: str
 
+    # The LLM sometimes returns confidence as a word ("high") instead of a number.
+    # This validator runs before Pydantic's own type check and converts it safely.
     @field_validator("confidence", mode="before")
     @classmethod
     def parse_confidence(cls, v):
@@ -70,6 +92,7 @@ class RootCauseAnalysis(BaseModel):
             v_clean = v.strip().lower()
             if v_clean in word_map:
                 return word_map[v_clean]
+            # Try numeric text such as "0.8"; use a neutral default if that fails too
             try:
                 return float(v)
             except ValueError:
@@ -78,7 +101,11 @@ class RootCauseAnalysis(BaseModel):
 
 
 
+# ---------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------
 
+# Save the result in the database and mark the incident as analyzed
 def update_incident(incident_id, root_cause):
     supabase.table("incident_log").update({
         "status": "analyzed",
@@ -86,6 +113,7 @@ def update_incident(incident_id, root_cause):
     }).eq("id", incident_id).execute()
 
 
+# Store problem + root cause in the vector DB, so future incidents can learn from it
 def add_to_chromadb(incident_id, problem_detail, root_cause):
     collection.add(
         documents=[f"{problem_detail} - Root cause: {root_cause}"],
@@ -94,6 +122,7 @@ def add_to_chromadb(incident_id, problem_detail, root_cause):
 
 
 # ── Tool definitions (JSON schema) — tells the LLM what tools exist and how to call them ──
+# The LLM only sees these descriptions, so they must clearly explain when to use each
 AVAILABLE_TOOLS = [
     {
         "type": "function",
@@ -149,6 +178,7 @@ AVAILABLE_TOOLS = [
 ]
 
 # ── Maps tool name (string) to actual Python function — used to execute the tool the LLM picks ──
+# The LLM only returns a tool name as text, so we look up the real function here.
 TOOL_FUNCTIONS = {
     "search_past_incidents": search_past_incidents,
     "check_recent_deployments": check_recent_deployments,
@@ -156,6 +186,10 @@ TOOL_FUNCTIONS = {
 }
 
 
+# ---------------------------------------------------------------
+# LangGraph node
+# Second step of the graph: investigate the incident and find the root cause.
+# ---------------------------------------------------------------
 def detective_node(state: IncidentState) -> dict:
     try:
         print(f"Investigating incident ID: {state['id']}")
@@ -166,6 +200,7 @@ def detective_node(state: IncidentState) -> dict:
             {"role": "user", "content": f"Investigate this incident.\n\nProblem Type: {state['problem_type']}\nProblem Detail: {state['problem_detail']}\nSeverity: {state['severity']}"}
         ]
 
+        # Safety limit, so the LLM cannot keep calling tools forever
         max_iterations = 5
 
         for i in range(max_iterations):
@@ -180,8 +215,10 @@ def detective_node(state: IncidentState) -> dict:
 
             # Step 2: Check if the LLM asked for a tool
             if message.tool_calls:
+            # Keep the LLM's request in the history, so tool results can be matched to it
                 messages.append(message)
 
+                # The LLM may ask for several tools in one turn
                 for tool_call in message.tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
@@ -201,6 +238,7 @@ def detective_node(state: IncidentState) -> dict:
                 # No tool call means the LLM is done investigating
                 break
         else:
+            # The loop ended without a break: the LLM never finished within the limit
             supabase.table("incident_log").update({"status": "detective_failed"}).eq("id", state['id']).execute()
             return {"status": "detective_failed"}
 
@@ -216,20 +254,24 @@ def detective_node(state: IncidentState) -> dict:
             response_format={"type": "json_object"}
         )
 
+        # Convert the JSON text to a dict, then validate it with Pydantic
         raw_data = json.loads(final_response.choices[0].message.content)
         result = RootCauseAnalysis(**raw_data)
 
+         # Save the result in the database and in the knowledge base
         update_incident(state['id'], result.root_cause)
         add_to_chromadb(state['id'], state['problem_detail'], result.root_cause)
 
         print(f"Incident {state['id']} analyzed. Root cause: {result.root_cause}")
 
+        # Pass only the new information to the next agent through the shared state
         return {
             "root_cause": result.root_cause,
             "status": "analyzed"
         }
 
     except Exception as e:
+     # Any failure marks the incident as failed, so the rest of the system knows
      print(f"ERROR processing incident {state['id']}: {e}")
      supabase.table("incident_log").update({"status": "detective_failed"}).eq("id", state['id']).execute()
      return {"status": "detective_failed"}
