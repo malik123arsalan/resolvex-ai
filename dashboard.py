@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 import pandas as pd
 
+# Load secrets (Supabase) from the .env file
 load_dotenv()
 
 # ---- Supabase connection (same as main.py) ----
@@ -20,6 +21,8 @@ st.set_page_config(
 )
 
 # ---- Custom CSS: cards, fonts, spacing ----
+# Streamlit has no built-in option for this, so we inject CSS directly.
+# It also hides the default menu and footer for a cleaner look.
 st.markdown("""
 <style>
     .block-container {
@@ -33,6 +36,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
+# ---------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------
 
 # ---- Color maps (single source of truth, reused everywhere) ----
 STATUS_COLORS = {
@@ -49,6 +56,7 @@ SEVERITY_COLORS = {
     "high": "#EF4444",
 }
 
+# Database column names -> readable table headers
 COLUMN_LABELS = {
     "id": "ID",
     "created_at": "Created At",
@@ -62,8 +70,13 @@ COLUMN_LABELS = {
     "thread_id": "Thread ID",
 }
 
+# Deployed FastAPI backend (Render free tier, so the first request can be slow)
 FASTAPI_BASE_URL = "https://resolvex-ai-backend.onrender.com"
 
+
+# ---------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------
 
 def safe_text(value, fallback="N/A"):
     """Handles missing Supabase values safely.
@@ -78,6 +91,7 @@ def safe_text(value, fallback="N/A"):
     return value
 
 
+# Data is cached for 10 seconds, so every rerun does not hit Supabase again
 @st.cache_data(ttl=10)
 def fetch_incidents():
     response = supabase.table("incident_log").select("*").execute()
@@ -90,8 +104,10 @@ def fetch_reports():
     return response.data
 
 
+# Draw one colored summary card inside the given column
 def render_metric_card(column, label, value, color):
     with column:
+        # "{color}1a" adds transparency to the hex color for a soft background
         st.markdown(f"""
         <div style="
             background-color: {color}1a;
@@ -106,6 +122,7 @@ def render_metric_card(column, label, value, color):
         """, unsafe_allow_html=True)
 
 
+# Table cell styling. Unknown values fall back to dark grey.
 def style_status(value):
     color = STATUS_COLORS.get(value, "#374151")
     return f"background-color: {color}33; color: {color}; font-weight: 600;"
@@ -124,6 +141,8 @@ with col_title:
     st.title("🤖 ResolveX AI — Incident Dashboard")
     st.caption("Autonomous incident detection and resolution — live view")
 with col_refresh:
+    # Streamlit does not auto-poll, so the user refreshes manually.
+    # Clearing the cache forces fresh data from Supabase.
     if st.button("🔄 Refresh"):
         fetch_incidents.clear()
         fetch_reports.clear()
@@ -131,14 +150,17 @@ with col_refresh:
 
 incidents = fetch_incidents()
 
+# Nothing to show without data, so stop the script here
 if not incidents:
     st.info("Abhi koi incident nahi hai.")
     st.stop()
 
+# Supabase returns a list of dicts; a DataFrame makes filtering easy
 df = pd.DataFrame(incidents)
 df["created_at"] = pd.to_datetime(df["created_at"]).dt.strftime("%d %b, %H:%M")
 
 # ---- Metrics row ----
+# One card per status, count = number of rows with that status
 col1, col2, col3, col4, col5 = st.columns(5)
 render_metric_card(col1, "TOTAL", len(df), "#60A5FA")
 render_metric_card(col2, "DETECTED", len(df[df["status"] == "detected"]), STATUS_COLORS["detected"])
@@ -151,11 +173,13 @@ st.markdown("---")
 # ---- Incidents table ----
 st.subheader("📋 All Incidents")
 
+# Keep only the columns that exist, so a missing column does not crash the page
 preferred_order = ["id", "created_at", "problem_type", "problem_detail",
                    "severity", "status", "root_cause", "risk_level", "fix_plan"]
 existing_cols = [c for c in preferred_order if c in df.columns]
 display_df = df[existing_cols].rename(columns=COLUMN_LABELS)
 
+# Color-code the Status and Severity columns (names are already renamed here)
 styled_df = display_df.style
 if "Status" in display_df.columns:
     styled_df = styled_df.map(style_status, subset=["Status"])
@@ -169,6 +193,7 @@ st.markdown("---")
 # ---- Incident Detail View ----
 st.subheader("🔍 Incident Detail View")
 
+# Dropdown shows "ID — problem type"; the ID is read back from the label below
 df["dropdown_label"] = df["id"].astype(str) + " — " + df["problem_type"].astype(str)
 selected_label = st.selectbox("Select an incident to inspect:", df["dropdown_label"])
 
@@ -183,15 +208,18 @@ with badge_col2:
     severity = safe_text(incident.get('severity'), "N/A")
     st.markdown(f"**Severity:** {severity.upper() if severity != 'N/A' else severity}")
 with badge_col3:
+    # Risk level is only set after the Planning Agent has run
     risk = safe_text(incident.get('risk_level'), "Not yet planned")
     st.markdown(f"**Risk Level:** {risk.upper() if risk != 'Not yet planned' else risk}")
 
 st.markdown(f"**Problem:** {safe_text(incident.get('problem_detail'))}")
 st.markdown(f"**Reported at:** {safe_text(incident.get('created_at'))}")
 
+# Root cause comes from the Detective Agent
 st.markdown("#### 🕵️ Root Cause")
 st.info(safe_text(incident.get("root_cause"), "Not yet analyzed."))
 
+# Fix plan comes from the Planning Agent
 st.markdown("#### 🛠️ Fix Plan")
 st.success(safe_text(incident.get("fix_plan"), "Not yet planned."))
 
@@ -200,6 +228,7 @@ st.markdown("---")
 # ---- Report Viewer ----
 st.subheader("📄 Incident Reports")
 
+# Reports are written by the Report Agent after an incident is resolved
 reports = fetch_reports()
 
 if not reports:
@@ -208,6 +237,7 @@ else:
     reports_df = pd.DataFrame(reports)
     reports_df["report_label"] = "Incident " + reports_df["incident_id"].astype(str)
 
+    # The key keeps this dropdown separate from the one in the detail view
     selected_report_label = st.selectbox(
         "Select a report to read:",
         reports_df["report_label"],
@@ -232,6 +262,7 @@ else:
     st.markdown("**✅ Outcome**")
     st.write(safe_text(report_row.get("outcome")))
 
+    # Additional notes are optional, so show the section only if notes exist
     notes = safe_text(report_row.get("additional_notes"), None)
     if notes:
         st.markdown("**📌 Additional Notes**")
@@ -244,6 +275,8 @@ st.subheader("✅ Pending Approvals")
 
 pending_df = df[df["status"] == "pending_approval"]
 
+# Only incidents with a thread_id can be resumed by LangGraph.
+# Older incidents without one are shown separately as "legacy".
 actionable_df = pending_df[pending_df["thread_id"].notna()]
 legacy_df = pending_df[pending_df["thread_id"].isna()]
 
@@ -263,14 +296,18 @@ if not actionable_df.empty:
                     st.caption(f"Proposed fix: {fix_plan}")
 
             with col_approve:
+                # Each button needs a unique key, so the incident ID is used
                 if st.button("✅ Approve", key=f"approve_{row['id']}"):
                     with st.spinner("Approving... (may take up to a minute)"):
                         try:
+                            # Long timeout: Render free tier is slow and approval triggers LLM calls
                             response = requests.post(
                                 f"{FASTAPI_BASE_URL}/incidents/{row['id']}/approve",
                                 timeout=90
                             )
                             data = response.json()
+                            # The backend can return HTTP 200 with an error in the body,
+                            # so both the status code and the body are checked
                             if response.status_code == 200 and "error" not in data:
                                 st.success(f"Incident {row['id']} approved!")
                                 fetch_incidents.clear()
@@ -283,6 +320,7 @@ if not actionable_df.empty:
                             st.error("Server response me bahut time laga (timeout). Render Logs check karo.")
 
             with col_reject:
+                # Same flow as Approve, but calls the reject endpoint
                 if st.button("❌ Reject", key=f"reject_{row['id']}"):
                     with st.spinner("Rejecting... (may take up to a minute)"):
                         try:
@@ -302,6 +340,7 @@ if not actionable_df.empty:
                         except requests.exceptions.Timeout:
                             st.error("Server response me bahut time laga (timeout). Render Logs check karo.")
 
+# Legacy incidents are view-only, with no Approve/Reject buttons
 if not legacy_df.empty:
     with st.expander(f"⚠️ {len(legacy_df)} legacy incidents (pre-LangGraph data, cannot be resumed)"):
         st.caption("Yeh purane incidents hai jinme thread_id save nahi hua tha — LangGraph aane se pehle ka data. Inhe approve/reject nahi kiya ja sakta.")

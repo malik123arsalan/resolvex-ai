@@ -14,14 +14,22 @@ from supabase import create_client
 import os
 from dotenv import load_dotenv
 
+# Load secrets (Supabase, Groq, Slack) from the .env file
 load_dotenv()
 
+# Database client (this file does not use it directly, but it is set up like the other files)
 supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY")
 supabase = create_client(supabase_url, supabase_key)
 
+# ---------------------------------------------------------------
+# Graph definition
+# The graph connects all agents. IncidentState is the shared data
+# that moves from one node to the next.
+# ---------------------------------------------------------------
 graph_builder = StateGraph(IncidentState)
 
+# Each node is one agent (or one step) of the pipeline
 graph_builder.add_node("monitoring", monitoring_node)
 graph_builder.add_node("detective", detective_node)
 graph_builder.add_node("planning", planning_node)
@@ -29,9 +37,11 @@ graph_builder.add_node("auto_apply", auto_apply_node)
 graph_builder.add_node("human_approval", human_approval_node)
 graph_builder.add_node("report", report_node)
 
+# Fixed path: start -> monitoring -> detective
 graph_builder.add_edge(START, "monitoring")
 graph_builder.add_edge("monitoring", "detective")
 
+# If the Detective failed there is nothing to plan, so the run ends here
 def route_after_detective(state: IncidentState) -> str:
     if state.get("status") == "detective_failed":
         return "end"
@@ -45,6 +55,8 @@ graph_builder.add_conditional_edges(
 )
 
 
+# Low-risk fixes are applied automatically.
+# Medium and high risk need a human decision.
 def route_by_risk(state: IncidentState) -> str:
     if state.get("risk_level") == "low":
         return "auto_apply"
@@ -60,6 +72,7 @@ graph_builder.add_conditional_edges(
 graph_builder.add_edge("auto_apply", "report")
 
 
+# Only an approved incident gets a report. A rejected one ends here.
 def route_after_approval(state: IncidentState) -> str:
     if state.get("status") == "approved_resolved":
         return "report"
@@ -75,17 +88,26 @@ graph_builder.add_conditional_edges(
 graph_builder.add_edge("report", END)
 
 # ──  SQLite checkpointer (restart-safe) ──
+# Saves the graph state after every node, so a paused or crashed run can continue later
 sqlite_conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
 checkpointer = SqliteSaver(sqlite_conn)
 
+# Build the runnable graph (imported by main.py)
 graph = graph_builder.compile(checkpointer=checkpointer)
 
 
+# ---------------------------------------------------------------
+# Pipeline loop
+# ---------------------------------------------------------------
+
+# Runs forever in the background. Every 30 seconds there is a 30% chance
+# of a simulated anomaly, which starts one full graph run.
 async def start_pipeline():
     while True:
         is_anomaly = random.random() < 0.3
 
         if is_anomaly:
+            # Each run gets its own thread_id, so its state is saved separately
             thread_id = str(uuid.uuid4())
             config = {"configurable": {"thread_id": thread_id}}
             try:
